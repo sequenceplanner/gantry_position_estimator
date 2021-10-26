@@ -8,6 +8,7 @@ include(r2r_cargo.cmake)
 # put ros package dependencies here.
 r2r_cargo(sensor_msgs
           std_msgs
+          std_srvs
           geometry_msgs
           tf2_msgs
           rcl
