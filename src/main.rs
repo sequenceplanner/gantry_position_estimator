@@ -239,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 new_transform.transform.rotation.z = new_q.v.z;
 
                 // set hardcoded height
-                new_transform.transform.translation.z = 2.85;
+                new_transform.transform.translation.z = 3.57;
 
                 state.facade_transform = Some(new_transform);
             } else {
@@ -289,7 +289,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 gantry_transform.transform.rotation.z = gantry_q.v.z;
 
                 // hardcoded height
-                gantry_transform.transform.translation.z = 1.62;
+                gantry_transform.transform.translation.z = 1.93;
 
                 state.gantry_transform = Some(gantry_transform);
             } else {
