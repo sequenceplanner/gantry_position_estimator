@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 //use std::time::Duration;
 use futures::stream::StreamExt;
 use futures::future;
-use cgmath::{Deg, Euler, Quaternion, Vector3};
+use cgmath::{Deg, Rad, Euler, Quaternion, Vector3};
 
 #[derive(Clone, Default)]
 struct State {
@@ -15,10 +15,8 @@ struct State {
     marker_0: Option<TransformStamped>,
     marker_1: Option<TransformStamped>,
 
-    // markers 2 5 and 15 define the gantry position
+    // markers 2 and 15 define the gantry position
     marker_2: Option<TransformStamped>,
-    marker_5: Option<TransformStamped>,
-    // marker 15 needs to be rotated 90deg in relation to the other two
     marker_15: Option<TransformStamped>,
 
     // computed results
@@ -34,15 +32,16 @@ fn update_or_set(new: TransformStamped, maybe_old: &mut Option<TransformStamped>
     if let Some(x) = maybe_old.as_mut() {
         *x = filter_transform(new, x.clone());
     } else {
+        println!("marker is live {}", new.child_frame_id);
         *maybe_old = Some(new)
     }
 }
 
+/// apply a low-pass filter to the position in the camera frame on incoming data
 fn filter_transform(new: TransformStamped, old: TransformStamped) -> TransformStamped {
     let mut new_transform = new.clone();
 
-    // translation
-    let smooth = 100.0;
+    let smooth = 10.0;
 
     let nx = new.transform.translation.x;
     let ny = new.transform.translation.y;
@@ -60,39 +59,18 @@ fn filter_transform(new: TransformStamped, old: TransformStamped) -> TransformSt
     new_transform.transform.translation.y = oy + diff_y;
     new_transform.transform.translation.z = oz + diff_z;
 
-    // rotation
-    let smooth = 100.0;
-
-    let nx = new.transform.rotation.x;
-    let ny = new.transform.rotation.y;
-    let nz = new.transform.rotation.z;
-    let nw = new.transform.rotation.w;
-
-    let ox = old.transform.rotation.x;
-    let oy = old.transform.rotation.y;
-    let oz = old.transform.rotation.z;
-    let ow = old.transform.rotation.w;
-
-    let diff_x = (nx - ox) / smooth;
-    let diff_y = (ny - oy) / smooth;
-    let diff_z = (nz - oz) / smooth;
-    let diff_w = (nw - ow) / smooth;
-
-    new_transform.transform.rotation.x = ox + diff_x;
-    new_transform.transform.rotation.y = oy + diff_y;
-    new_transform.transform.rotation.z = oz + diff_z;
-    new_transform.transform.rotation.w = ow + diff_w;
-
     new_transform
 }
 
+/// filter out bad measurements
+#[allow(dead_code)]
 fn marker_ok(t: &TransformStamped) -> bool {
     //
     let up = Vector3::unit_z();
-    let q0 = Quaternion::new(t.transform.rotation.w, t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z);
+    let q0 = Quaternion::new(t.transform.rotation.w, t.transform.rotation.x,
+                             t.transform.rotation.y, t.transform.rotation.z);
     let rotated =  q0 * up;
-    // check if the orientation looks ok still
-    rotated.x.abs() < 0.1 && rotated.y.abs() < 0.1 && rotated.z.abs() > 0.9
+    rotated.x.abs() < 0.2 && rotated.y.abs() < 0.2 && rotated.z.abs() > 0.9
 }
 
 #[tokio::main]
@@ -102,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sub = node.subscribe::<TransformStamped>("/aruco")?;
     let tf_pub = node.create_publisher::<TFMessage>("/rita/tf")?;
+    let tf_pub2 = node.create_publisher::<TFMessage>("/tf")?;
 
     let mut trigger_srv = node.create_service::<Trigger::Service>("trigger")?;
     let ok_pub = node.create_publisher::<Bool>("measured")?;
@@ -132,10 +111,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.marker_2 = None;
                 println!("stale marker 2, removing");
             }
-            if state.marker_5.as_ref().map(|t| (sec - t.header.stamp.sec) > 5).unwrap_or(false) {
-                state.marker_5 = None;
-                println!("stale marker 5, removing");
-            }
             if state.marker_15.as_ref().map(|t| (sec - t.header.stamp.sec) > 5).unwrap_or(false) {
                 state.marker_15 = None;
                 println!("stale marker 15, removing");
@@ -158,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 transforms,
             };
             tf_pub.publish(&tf_msg).expect("could not publish");
+            tf_pub2.publish(&tf_msg).expect("could not publish");
 
             // publish locked positions to tf.
             let mut transforms = vec![];
@@ -177,6 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 transforms,
             };
             tf_pub.publish(&tf_msg).expect("could not publish");
+            tf_pub2.publish(&tf_msg).expect("could not publish");
 
             // publish to sp
             let ok = state.facade_transform.is_some() &&
@@ -211,13 +188,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-
+    let interested_in = &["aruco_0", "aruco_1", "aruco_2", "aruco_15"];
     sub.for_each(|msg| {
-        // println!("new msg: {:?}", msg);
-        if !marker_ok(&msg) {
-            // println!("bad marker: {}", msg.child_frame_id);
+        if !interested_in.contains(&msg.child_frame_id.as_str()) {
             return future::ready(());
         }
+        // println!("new msg: {:?}", msg);
+        // if !marker_ok(&msg) {
+        //     println!("bad marker: {}", msg.child_frame_id);
+        //     return future::ready(());
+        // }
         if msg.child_frame_id == "aruco_0" {
             update_or_set(msg.clone(), &mut state.lock().unwrap().marker_0);
         }
@@ -231,50 +211,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let marker0 = state.marker_0.as_ref().unwrap().transform.clone();
                 let marker1 = state.marker_1.as_ref().unwrap().transform.clone();
 
-                let q0 = Quaternion::new(marker0.rotation.w, marker0.rotation.x, marker0.rotation.y, marker0.rotation.z);
-                let q1 = Quaternion::new(marker1.rotation.w, marker1.rotation.x, marker1.rotation.y, marker1.rotation.z);
-
-                let mut new_q = q0.nlerp(q1, 0.5);
+                let diff_x = marker1.translation.x - marker0.translation.x;
+                let diff_y = marker1.translation.y - marker0.translation.y;
+                let yaw = diff_y.atan2(diff_x);
 
                 let mut new_transform = state.marker_1.as_ref().unwrap().clone();
                 new_transform.child_frame_id = "facade_aruco".into();
 
-
                 let rot = Quaternion::from(Euler {
+                    x: Rad(0.0),
+                    y: Rad(0.0),
+                    z: Rad(yaw),
+                });
+
+                let rot2 = Quaternion::from(Euler {
                     x: Deg(180.0),
                     y: Deg(0.0),
                     z: Deg(0.0),
                 });
 
-                new_q.s = (1.0 - new_q.v.z * new_q.v.z).sqrt();
-                new_q.v.x = 0.0;
-                new_q.v.y = 0.0;
-
-                let new_q = new_q * rot;
-
-                // attempt at only keeping yaw angle....
-                // new_transform.transform.rotation.w = (1.0 - new_q.v.z * new_q.v.z).sqrt();
-                // new_transform.transform.rotation.x = 0.0;
-                // new_transform.transform.rotation.y = 0.0;
-                // new_transform.transform.rotation.z = new_q.v.z;
+                // set yaw and rotate around x to turn upside down.
+                let new_q = rot * rot2;
 
                 new_transform.transform.rotation.w = new_q.s;
                 new_transform.transform.rotation.x = new_q.v.x;
                 new_transform.transform.rotation.y = new_q.v.y;
                 new_transform.transform.rotation.z = new_q.v.z;
 
-                // let new_x = (marker0.translation.x + marker1.translation.x) / 2.0;
-                // let new_y = (marker0.translation.y + marker1.translation.y) / 2.0;
-                // let new_z = (marker0.translation.z + marker1.translation.z) / 2.0;
-
+                // set hardcoded height
                 new_transform.transform.translation.z = 2.85;
 
-                // new_transform.transform.translation.x = new_x;
-                // new_transform.transform.translation.y = new_y;
-                // new_transform.transform.translation.z = new_z;
-
                 state.facade_transform = Some(new_transform);
-
             } else {
                 state.facade_transform = None;
             }
@@ -284,70 +251,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             update_or_set(msg.clone(), &mut state.lock().unwrap().marker_2);
         }
 
-        if msg.child_frame_id == "aruco_5" {
-            update_or_set(msg.clone(), &mut state.lock().unwrap().marker_5);
-        }
-
         if msg.child_frame_id == "aruco_15" {
             update_or_set(msg.clone(), &mut state.lock().unwrap().marker_15);
         }
 
         {
             let mut state = state.lock().unwrap();
-            if state.marker_15.is_some() && (state.marker_2.is_some() || state.marker_5.is_some()) {
-                let marker15 = state.marker_15.as_ref().unwrap().transform.clone();
+            if state.marker_15.is_some() && state.marker_2.is_some() {
+                let marker15 = &state.marker_15.as_ref().unwrap().transform;
+                let marker2 = &state.marker_2.as_ref().unwrap().transform;
 
-                let rotation = &marker15.rotation;
-                let q0 = Quaternion::new(rotation.w, rotation.x, rotation.y, rotation.z);
-
-                // rotate marker 15 to align with the others
-                let rot = Quaternion::from(Euler {
-                    x: Deg(0.0),
-                    y: Deg(0.0),
-                    z: Deg(90.0),
-                });
-
-                let marker15_q = q0 * rot;
-
-                let other = if state.marker_2.is_some() {
-                    &state.marker_2.as_ref().unwrap().transform
-                } else {
-                    &state.marker_5.as_ref().unwrap().transform
-                };
-
-                let other_rot = &other.rotation;
-                let q1 = Quaternion::new(other_rot.w, other_rot.x, other_rot.y, other_rot.z);
-
-                let mut gantry_q = marker15_q.nlerp(q1, 0.5);
+                let diff_x = marker15.translation.x - marker2.translation.x;
+                let diff_y = marker15.translation.y - marker2.translation.y;
+                let yaw = diff_y.atan2(diff_x);
 
                 // gantry position is marker15 position with this new rotation.
                 let mut gantry_transform = state.marker_15.as_ref().unwrap().clone();
                 gantry_transform.child_frame_id = "gantry_aruco".into();
 
-
                 let rot = Quaternion::from(Euler {
+                    x: Rad(0.0),
+                    y: Rad(0.0),
+                    z: Rad(yaw),
+                });
+
+                let rot2 = Quaternion::from(Euler {
                     x: Deg(180.0),
                     y: Deg(0.0),
                     z: Deg(0.0),
                 });
 
-                gantry_q.s = (1.0 - gantry_q.v.z * gantry_q.v.z).sqrt();
-                gantry_q.v.x = 0.0;
-                gantry_q.v.y = 0.0;
-
-                let gantry_q = gantry_q * rot;
-
-                // only keep yaw...
-                // gantry_transform.transform.rotation.w = (1.0 - gantry_q.v.z * gantry_q.v.z).sqrt();
-                // gantry_transform.transform.rotation.x = 0.0;
-                // gantry_transform.transform.rotation.y = 0.0;
-                // gantry_transform.transform.rotation.z = gantry_q.v.z;
+                let gantry_q = rot * rot2;
 
                 gantry_transform.transform.rotation.w = gantry_q.s;
                 gantry_transform.transform.rotation.x = gantry_q.v.x;
                 gantry_transform.transform.rotation.y = gantry_q.v.y;
                 gantry_transform.transform.rotation.z = gantry_q.v.z;
 
+                // hardcoded height
                 gantry_transform.transform.translation.z = 1.62;
 
                 state.gantry_transform = Some(gantry_transform);
