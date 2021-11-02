@@ -19,9 +19,13 @@ struct State {
     marker_2: Option<TransformStamped>,
     marker_15: Option<TransformStamped>,
 
+    // marker 5 is the agv
+    marker_5: Option<TransformStamped>,
+
     // computed results
     facade_transform: Option<TransformStamped>,
     gantry_transform: Option<TransformStamped>,
+    agv_transform: Option<TransformStamped>,
 
     // locked results
     locked_facade_transform: Option<TransformStamped>,
@@ -115,6 +119,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.marker_15 = None;
                 println!("stale marker 15, removing");
             }
+            if state.marker_5.as_ref().map(|t| (sec - t.header.stamp.sec) > 5).unwrap_or(false) {
+                state.marker_5 = None;
+                println!("stale marker 5, removing");
+            }
         }
 
         // publish results.
@@ -127,6 +135,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 transforms.push(t.clone());
             }
             if let Some(t) = state.gantry_transform.as_ref() {
+                transforms.push(t.clone());
+            }
+            if let Some(t) = state.agv_transform.as_ref() {
                 transforms.push(t.clone());
             }
             let tf_msg = TFMessage {
@@ -188,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let interested_in = &["aruco_0", "aruco_1", "aruco_2", "aruco_15"];
+    let interested_in = &["aruco_0", "aruco_1", "aruco_2", "aruco_15", "aruco_5"];
     sub.for_each(|msg| {
         if !interested_in.contains(&msg.child_frame_id.as_str()) {
             return future::ready(());
@@ -294,6 +305,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.gantry_transform = Some(gantry_transform);
             } else {
                 state.gantry_transform = None;
+            }
+        }
+
+        if msg.child_frame_id == "aruco_5" {
+            update_or_set(msg.clone(), &mut state.lock().unwrap().marker_5);
+        }
+
+        {
+            let mut state = state.lock().unwrap();
+            if state.marker_5.is_some() {
+                let mut agv_transform = state.marker_5.as_ref().unwrap().clone();
+                agv_transform.child_frame_id = "agv_aruco".into();
+                state.agv_transform = Some(agv_transform);
             }
         }
 
