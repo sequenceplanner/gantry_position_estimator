@@ -316,6 +316,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut state = state.lock().unwrap();
             if state.marker_5.is_some() {
                 let mut agv_transform = state.marker_5.as_ref().unwrap().clone();
+                agv_transform.transform.translation.z = 3.27;
                 agv_transform.child_frame_id = "agv_aruco".into();
                 state.agv_transform = Some(agv_transform);
             }
