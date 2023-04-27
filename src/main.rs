@@ -82,12 +82,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ros_ctx = Context::create()?;
     let mut node = Node::create(ros_ctx, "gantry_position_estimator", "")?;
 
-    let sub = node.subscribe::<TransformStamped>("/aruco")?;
-    let tf_pub = node.create_publisher::<TFMessage>("/rita/tf")?;
-    let tf_pub2 = node.create_publisher::<TFMessage>("/tf")?;
+    let sub = node.subscribe::<TransformStamped>("/aruco", r2r::QosProfile::default())?;
+    let tf_pub = node.create_publisher::<TFMessage>("/rita/tf", r2r::QosProfile::default())?;
+    let tf_pub2 = node.create_publisher::<TFMessage>("/tf", r2r::QosProfile::default())?;
 
     let mut trigger_srv = node.create_service::<Trigger::Service>("trigger")?;
-    let ok_pub = node.create_publisher::<Bool>("measured")?;
+    let ok_pub = node.create_publisher::<Bool>("measured", r2r::QosProfile::default())?;
 
     let mut clock = r2r::Clock::create(r2r::ClockType::RosTime)?;
 
